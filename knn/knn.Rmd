@@ -1,0 +1,68 @@
+---
+title: "KNN"
+output: html_notebook
+---
+
+KNN is a non-parametric model, providing an estimate of probability of certain class given predictor variables. We identify the k training observations close to the new arriving ata point and see which is the majority. 
+
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(ISLR2)
+library(class) #for KNN
+library(caret)
+```
+
+```{r}
+smarket <- ISLR2::Smarket
+```
+
+Let us do cross validation in order to choose best k.
+```{r}
+knnaccuracies <- c()
+```
+
+```{r}
+folds <- caret::createFolds(smarket$Direction, k = 5, list = TRUE, returnTrain = FALSE)
+
+for (k_val in 1:50){
+  accs_this_fold <- c()
+  
+  knn_spec <- nearest_neighbor(neighbors=k_val) %>% 
+      set_mode("classification") %>% 
+      set_engine("kknn")
+  
+  for (fold in folds){
+    train <- smarket[-fold,]
+    test <- smarket[fold,]
+    
+    knn_fit <- knn_spec %>% 
+    fit(Direction ~ Lag1 + Lag2 + Lag3 + Lag4 + Lag5, data=train)
+    
+    acc <- augment(knn_fit, test) %>% 
+    accuracy(truth=Direction, estimate=.pred_class)
+    
+    accs_this_fold <- c(accs_this_fold, acc$.estimate)
+
+  }
+  #print(accs_this_fold)
+  
+  knnaccuracies <- c(knnaccuracies, mean(accs_this_fold))
+}
+```
+
+So the optimal k with corresponding accuracy are:
+```{r}
+print(which.max(knnaccuracies))
+knnaccuracies[which.max(knnaccuracies)]
+```
+If we have new data arriving, we would train the model with this value of k and the whole available data.
+
+Notes:
+- Scaling is important
+- Outliers may play a major role
+- k small may lead to overfitting; k large to underfitting
+
+
+
