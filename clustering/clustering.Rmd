@@ -1,0 +1,47 @@
+---
+title: "Clustering"
+output: html_notebook
+---
+
+```{r}
+library(dendextend)
+library(factoextra)
+```
+
+
+1. Hierarchical clusterig
+    - Building nested groups based on distance between items and linkage between groups
+    - Distance: Euclidean, Mahanalobis, Taxicab, Cosine similarity, etc.
+    - Linkage: single, complete, average, centroid
+
+Data is by Bulgarian National Institute.
+```{r}
+education <- readxl::read_xlsx("C:/Users/User/Documents/UNITN/Computational social science/bulgaria/education_employment.xlsx")
+#View(education)
+
+colnames(education) <- c("region", "total", "educ_others", "art_others")
+
+distmatrix <- dist(education$educ_others)
+hc <- hclust(distmatrix, method = "complete")
+plot(hc, labels = education$region)
+```
+
+```{r}
+hc$labels <- education$region
+
+#see where to cut (look for elbow)
+fviz_nbclust(as.matrix(education$educ_others), FUNcluster = hcut, method="wss")
+#may also use gap_stat for example
+
+fviz_dend(hc, main="Complete Linkage", cex=.7)
+
+fviz_dend(hc, main="Complete Linkage", cex=.7,
+          k=3, # cut in three groups
+          palette="jco")
+#rectangles around groups, trying with k = 4
+fviz_dend(hc, main="Complete Linkage", cex=.7,
+          k=4, # cut in four groups
+          rect=TRUE,
+          palette="jco")
+```
+
