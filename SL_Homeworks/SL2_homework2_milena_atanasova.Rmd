@@ -1,0 +1,278 @@
+---
+title: 'Statistical Learning, Homework #2'
+author: "Veronica Vinciotti, Marco Chierici"
+date: 'Released: 02/05/2022. Due: 16/05/2022'
+output:
+  pdf_document:
+    latex_engine: xelatex
+  word_document: default
+geometry: left=2cm,right=2cm,top=0.5cm,bottom=1.5cm
+---
+
+This homework deals with decision trees.
+
+You should submit an RMarkdown file and a pdf file of the report. The RMarkdown file should reproduce exactly the pdf file that you will submit. The pdf file should be rendered directly from the RMarkdown (using `output: pdf_document`) and not converted from any other output format. 
+
+Note that:
+
+* your code should run without errors (except for minor adjustments such as file paths);
+* in your report, you should: introduce the analysis, discuss/justify each choice that you make, provide comments on the results that you obtain and draw some conclusions.
+
+
+```{r init, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE,
+                      message=FALSE,
+                      tidy.opts=list(width.cutoff = 60),
+                      tidy = TRUE)
+```
+
+
+
+For this homework, you will work on cancer data to investigate the correlation between the level of prostate-specific antigen (`lpsa`, in ng/ml and log scaled) and a number of clinical measures, measured in 97 men who were about to receive a radical prostatectomy (file [prostate.csv](prostate.csv)). In particular, the explanatory variables are:
+
+* `lcavol`: log(cancer volume in cm3)
+* `lweight`: log(prostate weight in g)
+* `age` in years
+* `lbph`: log(amount of benign prostatic hyperplasia in cm2)
+* `svi`: seminal vesicle invasion (1 = yes, 0 = no)
+* `lcp`: log(capsular penetration in cm)
+* `gleason`: Gleason score for prostate cancer (6,7,8,9)
+* `pgg45`: percentage of Gleason scores 4 or 5, recorded over their visit history before their final current Gleason score
+
+In your report you should:
+
+1. Fit a decision tree on the whole data and plot the results. Choose the tree complexity by cross-validation and decide whether you should prune the tree based on the results. Prune the tree if applicable and interpret the fitted model.
+
+```{r}
+prostate <- read.csv("C:/Users/User/Documents/UNITN/Statistics/HW2/prostate.csv")
+#Transforming categorical variables
+prostate$svi <- as.factor(prostate$svi)
+prostate$gleason <- as.factor(prostate$gleason)
+summary(prostate)
+```
+
+
+```{r}
+library(tree)
+library(randomForest)
+library(caret)
+library(gbm)
+library(ggplot2)
+library(nestfs)
+```
+
+```{r}
+regtree <- tree(lpsa ~ ., data = prostate)
+plot(regtree)
+text(regtree)
+```
+
+It appears that the variable lcavol has a very high influence on the outcome.
+
+```{r}
+set.seed(681)
+cv.prostate <- cv.tree(regtree)
+optsize <- cv.prostate$size[which.min(cv.prostate$dev)]
+```
+
+```{r}
+#I interpret the optimal tree as with number of terminal nodes
+plot(cv.prostate$size, cv.prostate$dev, type = "b")
+```
+
+So according to this, we can prue the tree to improve.
+
+```{r}
+prunedtree <- prune.tree(regtree, best = optsize)
+plot(prunedtree)
+text(prunedtree)
+```
+Again variable lcavol has a very high importance for the decision.
+
+
+2. Consider now a random forest and let $m$ be the number of variables to consider at each split.  Set the range for $m$ from 1 to the number of explanatory variables, say $nvar$, and define a k-fold cross-validation schema for the selection of this tuning parameter, with $k$ of your choice. Prepare a matrix with $nvar$ rows and $2$ columns and fill the first column with the average cross-validation error corresponding to each choice of $m$ and the second column with the OOB error (from the full dataset).  Are the CV and OOB error different? Do they reach the minimum at the same value of $m$? Interpret the optimal model (either using the CV or the OOB error).
+
+```{r}
+nvars <- ncol(prostate) - 1
+mrange <- seq(1:nvars)
+matrix_error <- data.frame("CVerror" = c(rep(NA, nvars)), "OOBerror" = c(rep(NA, nvars)))
+
+set.seed(464)
+folds <- caret::createFolds(prostate$lpsa, k = 5, list = TRUE, returnTrain = TRUE)
+
+for (m in mrange){
+  mses <- c()
+  for (fold in folds){
+  prostate_train <- prostate[fold,]
+  prostate_test <- prostate[-fold,]
+  
+  rf <- randomForest(lpsa ~ ., data = prostate_train, mtry = m, importance = TRUE)
+  
+  preds_rf <- predict(rf, prostate_test)
+  mse_test <- mean((preds_rf - prostate_test$lpsa)^2)
+  
+  mses <- append(mses, mse_test)
+  }
+  matrix_error[m,]$CVerror <- mean(mses)
+  
+  #for oob error
+  rf_oob <- randomForest(lpsa ~ ., data = prostate, mtry = m, importance = TRUE)
+  matrix_error[m,]$OOBerror <- mean(rf_oob$mse)
+}
+```
+
+```{r}
+matrix_error
+which.min(matrix_error$CVerror) #Optimal m using CV
+which.min(matrix_error$OOBerror) #Optimal m using OOB
+```
+
+```{r}
+ggplot(matrix_error, aes(x = mrange)) + 
+  geom_line(aes(y = CVerror), col = "blue") +
+  geom_line(aes(y = OOBerror), col = "orange") +
+  labs(x = "m", y = "errors", title = "Errors for different m") +
+  theme_bw()
+```
+I will be using the OOB result to fit the random forest.
+
+```{r}
+rf <- randomForest(lpsa ~ ., data = prostate, mtry = which.min(matrix_error$OOBerror), importance = TRUE)
+rf
+importance(rf)
+varImpPlot(rf)
+
+```
+
+Using the default value for trees: 500, and the m I have found earlier, 3, a random forest is built, which at each split takes 3 of the variables from which to choose the one that gives the best metric after split. Here again looking at the variable importance plot, lcavol plays a huge role. In such a case, it is often picked as the first split, but because of the method rf applies (which is concerned with m), it won't be always present.
+
+
+3. Fit boosted regression trees making a selection of the number of boosting iterations (`n.trees`) by CV. Interpret your selected optimal model. 
+
+```{r}
+ntrees <- c(1:1000)
+set.seed(900)
+folds <- create.folds(5, nrow(prostate))
+
+errors <- rep(NA, 1000)
+
+for (n in ntrees){
+  mses <- c()
+  for (f in folds){
+    test <- prostate[f,]
+    train <- prostate[-f,]
+    boosted <- gbm(lpsa ~ ., data=train, distribution="gaussian",
+               n.trees=n, interaction.depth = 4)
+    yhat <- predict(boosted, newdata=test, n.trees=n)
+    mses <- append(mses,mean((yhat - test[,9])^2))
+  }
+  errors[n] <- mean(mses)
+}
+plot(ntrees, errors, type = "l")
+which.min(errors) #optimal value of n.trees
+```
+
+```{r}
+#optimal model
+boosted_final <- gbm(lpsa~., data = prostate, distribution = "gaussian", n.trees = which.min(errors), interaction.depth = 4)
+summary(boosted_final)
+```
+
+Once again the top variable is lcavol with highest relative influence. Here we have a collection of trees built sequentially so we cannot visualize a path to follow. We update by using residuals from previous tree.
+
+```{r}
+#partial dependence plot of response to lcavol
+plot(boosted_final, i="lcavol") #see the marginal effect of lcavol
+```
+
+
+4. Compare the performance of the three methods (cost-complexity decision trees, random forests and boosting) using cross-validation. Make sure that the model complexity is re-optimized at each choice of the training set (either using another CV or using the OOB error).
+
+
+```{r}
+models_errors <- data.frame("tree" = rep(NA, 5),
+                            "random forest" = rep(NA, 5),
+                            "boosting" = rep(NA, 5))
+mrange <- seq(1:nvars)
+outfolds <- create.folds(5, nrow(prostate))
+i = 1
+for (of in outfolds){
+  test <- prostate[of,]
+  train <- prostate[-of,]
+
+  #TREE
+  regtree <- tree(lpsa ~ ., data = train)
+  cv.prostate <- cv.tree(regtree)
+  optsize <- cv.prostate$size[which.min(cv.prostate$dev)]
+  prunedtree <- prune.tree(regtree, best = optsize)
+  #predict and error
+  yhat.tree <- predict(prunedtree, test)
+  error.tree <- mean((yhat.tree - test[,9])^2)
+  models_errors$tree[i] <- error.tree
+  
+  #RF
+  err_rf <- c()
+  for (m in mrange){
+  rf_oob <- randomForest(lpsa ~ ., data = train, mtry = m) 
+  err_rf[m] <- mean(rf_oob$mse)
+  }
+  which.min(err_rf)
+  rf_opt <- randomForest(lpsa ~ ., data = train, mtry = which.min(err_rf)) 
+  #predict and error
+  yhat.rf <- predict(rf_opt, newdata=test)
+  error_rf <- mean((yhat.rf - test[,9])^2)
+  models_errors$random.forest[i] <- error_rf
+  
+  
+  #BOOSTING
+  ntrees <- c(1:1000)
+  innerfolds <- create.folds(5, nrow(train), seed = NULL)
+  errors <- rep(NA, 1000)
+  for (n in ntrees){
+    mses <- c()
+    for (innf in innerfolds){
+      inntest <- train[innf,]
+      inntrain <- train[-innf,]
+      boosted <- gbm(lpsa ~ ., data=inntrain, distribution="gaussian",
+               n.trees=n, interaction.depth = 4)
+      yhat <- predict(boosted, newdata=inntest, n.trees=n)
+      mses <- append(mses,mean((yhat - inntest[,9])^2))
+    }
+    errors[n] <- mean(mses)
+  }
+  opt_ntree <- which.min(errors)
+  #Then fit the model on train and test on test folds
+  boosted <- gbm(lpsa ~ ., data=train, distribution="gaussian",
+               n.trees=opt_ntree, interaction.depth = 4)
+  yhat.boosted <- predict(boosted, newdata=test, n.trees=opt_ntree)
+  error_boosted <- mean((yhat.boosted - test[,9])^2)
+  models_errors$boosting[i] <- error_boosted
+  
+  
+  i = i+ 1
+}
+```
+
+```{r}
+models_errors
+mean(models_errors$tree)
+mean(models_errors$random.forest)
+mean(models_errors$boosting)
+```
+
+The random forest model apparently did the best job out of the three models, and as expected, decision tree gives instead the highest error on unseen data. Therefore, for this dataset, the best model of these would be random forest.
+
+
+5. Draw some general conclusions about the analysis and the different methods that you have considered.
+
+Decision tree as a method is very interpretable, as one can easily plot it and follow the branches until he/she reaches a prediction. Moreover after being pruned, it is even more easy to read. However, it has a very big drawback, which is the high variance and probability of overfitting, which eventually leads to worse predictions and higher test error.
+
+That is why random forest is introduced, which in itself is a collection of trees, and predictions then become the averages of those of individual trees.Random forest even further decorrelates trees compared to just a bootstrapping method (which just takes samples of n with replacement from the original dataset). Random forest does it by drawing m features at random before each split and consider splits on those only. The value of m is connected to bias-variance trade-off, that is why it is usually chosen by CV. Generally, rf performs quite well.
+
+The third method, boosting, instead builds a collection of trees sequentially, with each tree grown based on previous ones. Here though the number of trees should not be as big as computationally possible, because including too many trees again leads to overfitting. The idea is that we should update trees slowly.
+
+
+
+
+
+

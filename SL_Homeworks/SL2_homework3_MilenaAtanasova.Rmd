@@ -1,0 +1,310 @@
+---
+title: 'Statistical Learning, Homework #3'
+date: 'Released: 18/05/2022. Due: 29/05/2022'
+author: 'Veronica Vinciotti, Marco Chierici'
+output: pdf_document
+---
+
+This homework deals with Support Vector Machines.
+
+You should submit an RMarkdown file and a pdf file of the report. The RMarkdown file should reproduce exactly the pdf file that you will submit. The pdf file should be rendered directly from the RMarkdown (e.g. `output: pdf_document`) and not converted from any other output format.
+
+Note that:
+
+* your code should run without errors (except for minor adjustments such as file paths);
+* in your report, you should: introduce the analysis, discuss/justify each choice that you make, provide comments on the results that you obtain and draw some conclusions.
+
+# Exercise
+
+You will be working on a gene expression data set of 79 patients with leukemia belonging to two groups: patients with a chromosomal translocation ("1") and patients cytogenetically normal ("-1"). The data are provided in the attached `gene_expr.tsv` file, containing the expression for 2,000 genes and an additional column with the subtype. You will perform a supervised analysis for prediction of the two groups using support vector machines.
+
+To this aim:
+
+- Load the data and select a support vector machine for the task at hand. Evaluate different models and justify your final choice.
+
+First, let's load the required libraries.
+```{r}
+library(e1071)
+library(caret)
+```
+Reading the data. There are 2000 genes, as well as sampleID which will not serve for our analysis, as well as the response y.
+
+```{r}
+gene_expr <- read.table("C:/Users/User/Documents/UNITN/Statistics/HW3/gene_expr.tsv", header = TRUE, sep = "\t")
+```
+
+I am checking if there is balance in the response variable.
+
+```{r}
+
+sum(gene_expr$y == '1')
+sum(gene_expr$y == '-1')
+
+```
+The numbers are pretty close so they are not imbalanced.
+
+In order to decide on a SVM method between the three types of Kernels: linear, radial and polynomial, I am going to use a nested cross validation approach. I am initially dividing in 5 folds the data. Then at every iteration I am going to do the tuning with a grid of parameters based on the train set, get the corresponding best model and use it to do testing on the test fold to obtain estimate for error. Finally for each one a metric used for model comparison is computed by taking the average of the five folds.
+
+```{r}
+#Data frame to store errors of folds of the 3 methods
+models_errors <- data.frame("SVC" = rep(NA, 5),
+                            "SVM_radial" = rep(NA, 5),
+                            "SVM_poly" = rep(NA, 5))
+
+```
+
+
+```{r}
+#Initial division in 5 folds
+set.seed(2001)
+gene_expr_noID <- gene_expr[,-1]
+gene_expr_noID$y <- as.factor(gene_expr_noID$y)
+outfolds <- createFolds(gene_expr_noID$y, k = 5, list = TRUE, returnTrain = TRUE)
+```
+
+Support vector classifier - using a linear Kernel.
+
+```{r}
+i = 1
+for (of in outfolds){
+  train <- gene_expr_noID[of,]
+  test <- gene_expr_noID[-of,]
+  
+  #SVC
+  tune_svc <- tune(svm, y ~., data = train, kernel = "linear", 
+                   ranges=list(cost=c(0.001, 0.01, 0.1, 1, 10, 100)))
+  #print(summary(tune_svm))
+  best_svc <- tune_svc$best.model
+  
+  yhat <- predict(best_svc, test)
+  err <- mean(yhat != test$y)
+  models_errors$SVC[i] <- err
+  
+  i = i +1
+}
+```
+
+When looking at summaries of best_svc for different folds, I saw that most of the observations used for training are support vectors, which is a sign of overfitting and is probably during the fact that there is a very large number of explanatory variables and n<<p.
+
+Support vector machines with a radial Kernel.
+
+```{r}
+i = 1
+for (of in outfolds){
+  train <- gene_expr_noID[of,]
+  test <- gene_expr_noID[-of,]
+  
+  #SVM radial Kernel
+  tune_svmrad <- tune(svm, y ~., data = train, kernel = "radial",
+                      ranges=list(cost=c(0.001, 0.01, 0.1, 1, 10, 100),
+                                  gamma = c(0.001, 0.01, 0.1, 1, 10, 100)))
+  #print(summary(tune_svmrad))
+  best_svmrad <- tune_svmrad$best.model
+  
+  yhat <- predict(best_svmrad, test)
+  err <- mean(yhat != test$y)
+  models_errors$SVM_radial[i] <- err
+  
+  i = i +1
+}
+```
+
+Support vector machines with a polynomial Kernel.
+
+```{r}
+i = 1
+for (of in outfolds){
+  train <- gene_expr_noID[of,]
+  test <- gene_expr_noID[-of,]
+  
+  #Poly kernel
+  tune_svmpoly <- tune(svm, y ~., data = train, kernel = "polynomial",
+                       ranges=list(cost=c(0.001, 0.01, 0.1, 1, 10, 100),
+                                   degree = c(1, 2, 3, 4)))
+
+  best_svmpoly <- tune_svmpoly$best.model
+  
+  yhat <- predict(best_svmpoly, test)
+  err <- mean(yhat != test$y)
+  models_errors$SVM_poly[i] <- err
+  
+  i = i + 1
+}
+
+```
+
+Taking a look at the final results.
+
+```{r}
+models_errors
+sapply(models_errors, mean)
+```
+Both SVC and SVM_poly appear to be doing better job than SVM_radial, and they have the same estimate as mean validation error from the folds. In such a case, I would use the SVC model as it is more simple.
+
+However, still error is quite high. It is probable that we would do better if we reduce the number of explanatory variables, which is done in the next section. 
+
+
+- A popular approach in gene expression analysis is to keep only the most variable genes for downstream analysis. Since most of the $2K$ genes have low expression or do not vary much across the experiments, this step usually minimizes the contribution of noise. Select then only genes whose standard deviation is among the top 5% and repeat the analyses performed in the previous task on the filtered data set. 
+
+
+```{r}
+sds <- sapply(gene_expr_noID[,-2001], sd)
+order_sds <- order(sds, decreasing = TRUE)
+ordered <- sds[order_sds]
+num <- 0.05*length(ordered)
+names_to_keep <- names(ordered)[1:num]
+new_ge <- gene_expr_noID[,names_to_keep]
+new_ge$y <- as.factor(gene_expr_noID$y)
+```
+
+I am going to use the same procedure as before, based only on these 100 genes.
+Further, for each model I will calculate the AUC in order to better compare them.
+
+```{r}
+#Dataframe to store errors for the different models
+models_errors_new <- data.frame("SVC" = rep(NA, 5),
+                            "SVM_radial" = rep(NA, 5),
+                            "SVM_poly" = rep(NA, 5))
+
+```
+
+```{r}
+#Dataframe to store aucs for the different models
+models_auc_new <- data.frame("SVC" = rep(NA, 5),
+                            "SVM_radial" = rep(NA, 5),
+                            "SVM_poly" = rep(NA, 5))
+
+```
+
+```{r}
+#creation of five folds
+set.seed(2001)
+outfolds <- createFolds(new_ge$y, k = 5, list = TRUE, returnTrain = TRUE)
+```
+
+I am defining a function which returns the AUC of a model.
+```{r}
+library(ROCR)
+calc_auc <- function(preds_probs, truevalues){
+predobj <- ROCR::prediction(preds_probs, truevalues)
+perfobj <- ROCR::performance(predobj, "auc")
+perf2 <- ROCR::performance(predobj, "tpr", "fpr")
+#plot(perf2) #roc curve
+return (perfobj@y.values[[1]])
+}
+```
+
+
+```{r}
+i = 1
+for (of in outfolds){
+  train <- new_ge[of,]
+  test <- new_ge[-of,]
+  
+  #SVC
+  tune_svc <- tune(svm, y ~., data = train, kernel = "linear",
+                   ranges=list(cost=c(0.0001, 0.001, 0.01, 0.1, 1, 10, 100)))
+  #print(summary(tune_svc))
+  best_cost <- tune_svc$best.parameters$cost #get best parameter
+  best_svc <- svm(y ~., data = train, kernel = "linear", 
+              cost = best_cost, probability = TRUE) #refit with best parameter
+  
+  yhat <- predict(best_svc, test, probability = TRUE)
+  err <- mean(yhat != test$y)
+  models_errors_new$SVC[i] <- err
+  
+  #auc
+  auc <- calc_auc(attr(yhat, "probabilities")[,1], test$y)
+  models_auc_new$SVC[i] <- auc
+  
+  i = i +1
+}
+```
+
+
+```{r}
+i = 1
+for (of in outfolds){
+  train <- new_ge[of,]
+  test <- new_ge[-of,]
+  
+  #SVM radial Kernel
+  tune_svmrad <- tune(svm, y ~., data = train, kernel = "radial",                ranges=list(cost=c(0.0001, 0.001, 0.01, 0.1, 1, 10, 100),
+                      gamma = c(0.0001, 0.001, 0.1, 1, 10, 100)))
+  #print(summary(tune_svmrad))
+  best_cost <- tune_svmrad$best.parameters$cost
+  best_gamma <- tune_svmrad$best.parameters$gamma
+  best_svmrad <- svm(y ~., data = train, kernel = "radial", cost = best_cost,
+              gamma = best_gamma, probability = TRUE) #refit with best parameter
+  
+  yhat <- predict(best_svmrad, test, probability = TRUE)
+  err <- mean(yhat != test$y)
+  models_errors_new$SVM_radial[i] <- err
+  
+  auc <- calc_auc(attr(yhat, "probabilities")[,1], test$y)
+  models_auc_new$SVM_radial[i] <- auc
+  
+  i = i +1
+}
+```
+
+```{r}
+i = 1
+for (of in outfolds){
+  train <- new_ge[of,]
+  test <- new_ge[-of,]
+
+  #Poly kernel
+  tune_svmpoly <- tune(svm, y ~., data = train, kernel = "polynomial",                ranges=list(cost=c(0.0001, 0.001, 0.01, 0.1, 1, 10, 100),
+                      degree = c(1, 2, 3, 4, 5)))
+
+  best_cost <- tune_svmpoly$best.parameters$cost
+  best_degree <- tune_svmpoly$best.parameters$degree
+  best_svmpoly <- svm(y ~., data = train, kernel = "polynomial",
+                  cost = best_cost, degree = best_degree, probability = TRUE)
+  
+  yhat <- predict(best_svmpoly, test, probability = TRUE)
+  err <- mean(yhat != test$y)
+  models_errors_new$SVM_poly[i] <- err
+  
+  auc <- calc_auc(attr(yhat, "probabilities")[,1], test$y)
+  models_auc_new$SVM_poly[i] <- auc
+  
+  i = i + 1
+}
+```
+
+
+Looking at the results.
+
+```{r}
+models_errors_new
+sapply(models_errors_new, mean)
+```
+
+```{r}
+models_auc_new
+sapply(models_auc_new, mean)
+```
+In this case with less variables, both SVC and SVM_radial have lower error than SVM_poly. When looking also at the AUC, it appears that SVC (meaning using a linear Kernel) is slightly better.
+Therefore, this would be the model to use for classification of examples.
+
+When new examples arrive, it is better to use all the available so far data for fitting the best chosen model. Here I am again using tune in order to find the optimal value for the parameter cost based on all the observations and then plug it in the final model.
+
+```{r}
+tune_svc <- tune(svm, y ~., data = new_ge, kernel = "linear",
+                 ranges=list(cost=c(0.0001, 0.001, 0.01, 0.1, 1, 10, 100)))
+  print(summary(tune_svc))
+  best_cost <- tune_svc$best.parameters$cost #get best parameter
+  final_svc <- svm(y ~., data = new_ge, kernel = "linear", 
+                   cost = best_cost, probability = TRUE)
+  print(summary(final_svc))
+```
+
+This is the model to be used for classifying new observations. It has cost of 1 and 39 support vectors, balanced among the two classes.
+
+- Draw some conclusions from the analyses that you have conducted.
+
+By removing the variables with lower SD, we remove the noise. Therefore the models improve, because they learn from the important predictors and thus perform better on the test set. It is even more important in this particular case, as the number of predictors is much larger than the number of observations.
+
+The best-performing model is the SVC, which means there is a hyperplane that could more or less well separate the classes and there is no need to go to a higher-dimensional space, which the other support vector machines methods achieve by the Kernel trick.

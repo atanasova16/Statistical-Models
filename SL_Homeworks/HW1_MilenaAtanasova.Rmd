@@ -1,0 +1,214 @@
+---
+title: 'Statistical Learning, Homework #1'
+author: "Veronica Vinciotti, Marco Chierici"
+date: 'Released: 28/03/2022. Due: 11/04/2022'
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+  word_document: default
+geometry: left=2cm,right=2cm,top=0.5cm,bottom=1.5cm
+---
+This homework deals with classification methods.
+You should submit an RMarkdown file and a pdf file of the report. The RMarkdown file should reproduce exactly the pdf file that you will submit. The pdf file should be rendered directly from the RMarkdown (using `output: pdf_document`) and not converted from any other output format. 
+
+Note that:
+
+* your code should run without errors (except for minor adjustments such as file paths);
+* in your report, you should: introduce the analysis, discuss/justify each choice that you make, provide comments on the results that you obtain and draw some conclusions.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE,
+                      message=FALSE,
+                      tidy.opts=list(width.cutoff = 80),
+                      tidy = TRUE)
+library(tidyverse)
+library(class) # for knn
+library(caret) # for createDataPartition
+library(psych) # for dummy.code
+library(e1071) # for Naive Bayes
+library(pROC)  # for ROC curve
+library(tidymodels)
+```
+
+### Description of dataset
+The data set for this homework is available at [breastfeed.Rdata](breastfeed.Rdata).
+The data come from a study conducted at a UK hospital, investigating the possible factors affecting the decision of pregnant women to breastfeed their babies, in order to target breastfeeding promotions towards women with a lower probability of choosing it. 
+
+For the study, 135 expectant mothers were asked what kind of feeding method they would use for their coming baby. The responses were classified into two categories (variable **breast** in the dataset): the first category  (coded 1) includes the cases "breastfeeding", "try to breastfeed" and "mixed breast- and bottle-feeding", while the second  category (coded 0) corresponds to "exclusive bottle-feeding". The possible factors, that are available in the data, are the advancement of the pregnancy (**pregnancy**), how the mothers were fed as babies (**howfed**), how the mother's friend fed their babies (**howfedfr**), if they have a partner (**partner**), their age (**age**), the age at which they left full-time education (**educat**), their ethnic group (**ethnic**) and if they have ever smoked (**smokebf**) or if they have stopped smoking (**smokenow**). All of the factors are two-level factors. 
+
+### Homework tasks
+In your report, you should:
+
+1. Explore the data: what is the distribution of the response variable (`breast`)? Are there potential issues with any of the predictors? Do you need pre-processing or can you proceed with the data as is?
+
+```{r Explore}
+load("C:/Users/User/Documents/UNITN/Statistics/breastfeed.Rdata")
+#View(breastfeed)
+#Breast has 2 possible values, so it is distributed as a bernoulli
+#Classes are unbalanced as we can see
+nrow(breastfeed[breastfeed$breast == "Bottle",])
+nrow(breastfeed[breastfeed$breast == "Breast",])
+barplot(table(breastfeed$breast))
+
+#Potential issues with predictors: it could be that they are correlated among each other
+
+#There are NAs so we have to do something with them
+summary(breastfeed)
+breastfeed[(is.na(breastfeed$age) | is.na(breastfeed$educat)),]
+#They come from the class which is with less observations, so I will put the mean where there is NA
+breastfeed[is.na(breastfeed$age),]$age <- as.integer(mean(breastfeed$age, na.rm = T))
+breastfeed[is.na(breastfeed$educat),]$educat <- as.integer(mean(breastfeed$educat, na.rm = T))
+
+breastfeed$age <- as.integer(breastfeed$age)
+breastfeed$educat <- as.integer(breastfeed$educat)
+```
+
+
+Here I create a dataframe where I will keep the metrics for the three models.
+```{r Models dataframe}
+models <- data.frame(model = c("LR", "KNN", "NB"), accuracy = c(0,0,0), precision = c(0,0,0), sensitivity = c(0,0,0))
+```
+
+
+
+2. Split the data into (reproducible) training and test sets. Given the class imbalance, you could aim for sets that have the same imbalance with respect to the outcome variable. In order to do this, you could either perform the splitting manually on each class, or use dedicated functions (for example, `caret::createDataPartition(labels, p=train_size)`, with `train_size` a number between 0 and 1 representing the percentage of data you would like to use for training.
+
+If I was to split into just one train-test, I would do:
+
+train <- caret::createDataPartition(breastfeed$breast, p=0.7)
+breastfeed_test <- breastfeed[-train$Resample1,]
+breastfeed_train <- breastfeed[train$Resample1,]
+
+However, I decided I will do a CV rather than validation set approach, because the values it will give will have lower variance. I will split the data in 5 fols for cross validation, using the function which keeps the classes balanced in the folds
+
+```{r Creating folds for k-fold CV}
+set.seed(231)
+outfolds <- caret::createFolds(breastfeed$breast, k = 5, list = TRUE, returnTrain = FALSE)
+```
+
+Then I am going to do a big cycle for the 5 folds and get metrics for all the three models, so I will put this cycle in one chunk.
+
+3. Fit the following GLM model:
+\begin{align*}
+\mbox{logit}(\mbox{E(breast)}) &= \beta_0 + \beta_1     \mbox{pregnancy} + \beta_2 \mbox{howfed} + \beta_3 \mbox{howfedfr} \\&+ \beta_4 \mbox{partner} + \beta_5 \mbox{age} + \beta_6 \mbox{educat} + \beta_7 \mbox{ethnic} + \beta_8 \mbox{smokenow} + \beta_9 \mbox{smokebf}
+\end{align*} Discuss the `summary` and the interpretation of the model in the context of the study.
+4. Fit a k-nn classifier, by performing a careful selection of the tuning parameter $k$. 
+5. Fit a Naïve Bayes classifier. 
+
+```{r}
+#Putting here the specifications for logistic regression, as they don't change with folds
+logsp <- logistic_reg(mode = "classification", engine = "glm")
+
+#Lists of metrics for each fold
+accs_lr <- precs_lr <- sens_lr <- c()
+accs_knn <- precs_knn <- sens_knn <- c()
+accs_nb <- precs_nb <- sens_nb <- c()
+```
+
+```{r Cross Validation for the 3 models}
+for (outf in outfolds){
+  
+  ts <- breastfeed[outf,]
+  training <- breastfeed[-outf,]
+  
+  #Logistic regression. I will not consider variable selection 
+  #(for example with regsubsets to see which variables to keep), 
+  #as the equation is given in the problem description
+  #If I were to do it, this is how it would have looked like, and then decide according to one of the metrics
+  #(adjusted R squared, CP, BIC,...)
+  
+  #library(leaps)
+  #regfit.fulls <- regsubsets(breast ~ ., data=breastfeed, nvmax=9)
+  
+  lrfits <- logsp %>% fit(breast ~ ., data = training)
+  #Getting the estimates of the metrics
+  acc <- augment(lrfits, ts) %>% accuracy(truth = breast, estimate = .pred_class)
+  #Considering Bottle as a positive (the class with fewer observations) in order to see how our model 
+  #is performing on predicting these kinds of observations
+  #with contrasts(breastfeed$breast) we see Breast is 1, bottle is 0
+  pr <- augment(lrfits, ts) %>% precision(truth = breast, estimate = .pred_class, event_level = 'first') 
+  sens <- augment(lrfits, ts) %>% sensitivity(truth = breast, estimate = .pred_class, event_level = 'first') 
+  
+  #Appending the estimates for the current fold in the lists
+  accs_lr <- append(accs_lr, acc$.estimate)
+  precs_lr <- append(precs_lr, pr$.estimate)
+  sens_lr <- append(sens_lr, sens$.estimate)
+  
+  #Naive Bayes
+  NBfit1 <- naiveBayes(breast ~., data = training)
+  preds_testNB <- predict(NBfit1, ts) #type = 'raw'
+  
+  t <- table(preds_testNB, ts$breast) #confusion matrix
+  #Getting metrics and appending them
+  prnb <- t[1,1]/(t[1,1]+ t[1,2])
+  sensnb <- t[1,1]/(t[1,1]+ t[2,1])
+  accs_nb <- append(accs_nb, mean(preds_testNB == ts$breast))
+  sens_nb <- append(sens_nb, sensnb)
+  precs_nb <- append(precs_nb, prnb)
+  
+  
+  #kNN
+  
+  #For kNN I will do a nested cross validation in order to choose optimal k, which will actually
+  #change from fold to fold. But I still get an average estimate of how the model is performing
+  #comparing to the others.
+  #I do a loop through ks and innerfolds and get a k optimal for this specific fold. 
+  #After the inner CV has chosen the k value, use this k to fit the model on all the train 
+  #(as we also are fitting the other models on the train), then test on the test and collect metrics
+  knn_incv <- data.frame(k = c(1:20), acc = rep(0,20))
+  innerfolds <- caret::createFolds(training$breast, k = 5, list = TRUE, returnTrain = FALSE)
+  for (k_val in 1:20){
+    knnspecs <- nearest_neighbor(neighbors = k_val, mode = "classification", engine = "kknn")
+    #In the specific case of choosing k optimal, I will rely on accuracy as a metric, 
+    #though we could also consider precision or sensitivity, as we are dealing with imbalanced classes.
+    foldaccuracies <- c()
+    for (innf in innerfolds){
+      valid <- training[innf,]
+      tr <- training[-innf,]
+      knnfits <- knnspecs %>% fit(breast ~., tr)
+      a <- augment(knnfits, valid) %>% accuracy(truth = breast, estimate = .pred_class)
+      foldaccuracies <- append(foldaccuracies, a$.estimate)
+    }
+    #For this k, keep it and average of the accuracies from the cv
+    knn_incv[knn_incv$k == k_val,]$acc = mean(foldaccuracies)
+  }
+
+  index_best_acc <- which.max(knn_incv$acc)
+  k_to_use <- knn_incv[index_best_acc,]$k
+  
+  #Now fit with this k on the whole train data and get metrics:
+  knnspecs <- nearest_neighbor(neighbors = k_to_use, mode = "classification", engine = "kknn")
+  knnfits <- knnspecs %>% fit(breast ~., training)
+  acc_knn <- augment(knnfits, ts) %>% accuracy(truth = breast, estimate = .pred_class)
+  prec_knn <- augment(knnfits, ts) %>% precision(truth = breast, estimate = .pred_class, event_level = 'first')
+  s_knn <- augment(knnfits, ts) %>% sensitivity(truth = breast, estimate = .pred_class, event_level = 'first')
+  accs_knn <- append(accs_knn, acc_knn$.estimate)
+  precs_knn <- append(precs_knn, prec_knn$.estimate)
+  sens_knn <- append(sens_knn, s_knn$.estimate)
+  
+}
+```
+
+6. Evaluate the performance of the methods and compare the results.
+
+```{r Models}
+models <- data.frame(model = c("LR", "KNN", "NB"), 
+                     accuracy = c(mean(accs_lr),mean(accs_knn),mean(accs_nb)), 
+                     precision = c(mean(precs_lr),mean(precs_knn),mean(precs_nb)),
+                     sensitivity = c(mean(sens_lr),mean(sens_knn),mean(sens_nb)))
+models
+```
+
+Looking at the estimates, we now have to choose a model. Once we choose a model, we should train it again, this time using all the data we have right now in order for it to include more training data and potentially perform better for new unseen data. If we choose kNN, do again a simple k-fold cross validation on the whole data to choose k, then use this k and the whole data to get the final model.
+
+The estimates actually change depending on which observations are included in the test and training sets for each iteration of the CV. I believe a reason for this is also that the sample size is not very big (139 observations). 
+
+I think it is useful to not consider only accuracy because of the class imbalance. Sensitivity and precision can be used in order to see how models perform when it comes to classifying the class with fewer representatives. In this case, the models perform in a fairly comparable way, but I think maybe kNN should be the choice (better accuracy and precision). It also comes to what do we need the predictions for (medical reason (having statistics of how babies are fead to improve), commercial reason (considering about selling milk), making a program (like an initiative to promote breastfeed), etc.).
+
+
+### Hints
+In R, the Naïve Bayes (NB) classifier is included in the package `e1071`. The syntax is `naiveBayes(formula, data)` for model fitting, and the usual `predict(fit, newdata)` for predicting on new data.
+A fitted `naiveBayes` object stores the conditional probabilities for each feature, together with the *a priori* probabilities.
+To compute the posterior probabilities, you call `predict()` with the argument `type="raw"`.
